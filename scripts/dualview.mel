@@ -1,0 +1,1612 @@
+// dualview - MEL Script
+// --------------------------------------------------------------------------
+//
+// DESCRIPTION:
+//	A maya user interface for dualview displays.
+//
+// USAGE:
+//	source "dualview.mel";
+//
+// AUTHOR:
+//	Christian Staschinski - info@beareality.com - https://www.beareality.com
+//
+// COPYRIGHT:
+//	Copyright (c) 2021 Beareality UG (haftungbeschränkt) - All Rights Reserved.
+//  GNU GENERAL PUBLIC LICENSE
+//
+// --------------------------------------------------------------------------
+// https://github.com/beareality/dualview
+// --------------------------------------------------------------------------
+
+// Global Variables
+// --------------------------------------------------------------------------
+global string $dv_iniDirPath, $dv_tmpLayouts[2];
+global int $dv_states[5], $dv_scriptJobs[4];
+global float $dv_mayaVersion[2];
+// 0 debug, 1 echo, 2 refresh, 3 preset, 4 titlebar
+$dv_states = {0, 0, 0, 1, 1};
+proc dv_setGlobalVariables() {
+	global string $dv_iniDirPath;
+	global int $dv_states[], $dv_scriptJobs[];
+	$dv_iniDirPath = "";
+	$dv_states[4] = 0;
+	$dv_scriptJobs = {0, 0, 0 , 0};
+}
+// Helper Procedures
+// --------------------------------------------------------------------------
+proc dv_layoutHierarchy(string $_layout, string $_parent, int $_tab) {
+  string $bars = "| | | | | | | | | | | | | | | | | | | | | | | | | | | ";
+  string $path = ( $_parent + "|" + $_layout );
+  if (`layout -exists $path`) {
+    if ( $_tab > 1 ) print ( `substring $bars 1 (($_tab-1)*2)` );
+    if ( $_tab > 0 ) print ( "+ " );
+    print ( $_layout + "\n" );
+    string $ca[] = `layout -q -ca $path`;
+    for ($c in $ca) {
+      dv_layoutHierarchy( $c, $path, $_tab+1 );
+    }
+  }
+}
+proc int dv_debug(string $_debug) {
+	global int $dv_states[];
+	if ($dv_states[0]) print("// dualview DEBUG: "+$_debug+" //\n");
+	return $dv_states[0];
+}
+proc int dv_echo(string $_echo) {
+	global int $dv_states[];
+	if ($dv_states[1]) print("// dualview ECHO: "+$_echo+" //\n");
+	return $dv_states[1];
+}
+proc float dv_mayaVersionOrLT(int $_returnLT) {
+	global float $dv_mayaVersion[];
+	if (!`size $dv_mayaVersion`) {
+		string $versionString = `about -version`;
+		string $result = match("^[0-9]+[.]*[0-9]*[.]*[0-9]*[.]*[0-9]*", $versionString);
+		if ("" != $result) {
+			string $tokenArray[];
+			int $tokenCount = `tokenize $result "." $tokenArray`;
+			$result = "";
+			for ($index = 0; $index < $tokenCount; $index++) {
+				$result += $tokenArray[$index];
+				if ($index==0 && $tokenCount>1) {
+					$result += ".";
+				}
+			}
+			$dv_mayaVersion[0] = $result;
+		}
+		if ($dv_mayaVersion[0]>=2015&&`about -ltVersion`) {
+			$dv_mayaVersion[1] = 1;
+		} else {
+			$dv_mayaVersion[1] = 0;
+		}
+	}
+	return $dv_mayaVersion[$_returnLT];
+}
+proc dv_develop() {
+	global int $dv_states[];
+	$dv_states[0] = 1;
+	$dv_states[1] = 1;
+	if (!dv_mayaVersionOrLT(1)) {
+		string $melFilePath = whatIs("dualview.mel");
+		$melFilePath = dirname(substring($melFilePath, 18, size($melFilePath)))+"/dualview-debug.mel";
+		scriptEditorInfo -chf -wh 1 -se 0 -sw 0 -si 0 -sr 0 -ssw 0 -hfn $melFilePath;
+		if(!`scriptedPanel -exists scriptEditorPanel1`) {
+			evalDeferred("ScriptEditor");
+		}
+	}
+	dv_debug("installedVersion: "+`about -iv`);
+	dv_debug("operatingSystemVersion: "+`about -osv`);
+}
+// Read and Write Procedures
+// --------------------------------------------------------------------------
+proc string[] dv_readStringArray(int $_readLine, string $_iniFilePath) {
+	string $dataStringArray[];
+	if (dv_mayaVersionOrLT(1)) {
+		string $iniFileContent[] = freadAllLines($_iniFilePath);
+		int $currentLine = 0;
+		while (size($iniFileContent[$currentLine]) > 0) {
+			$dataStringArray[size($dataStringArray)] = $iniFileContent[$currentLine];
+			$currentLine++;
+		}
+	} else {
+		int $fileId = `fopen $_iniFilePath "r"`;
+		string $nextLine = `fgetline $fileId`;
+		while (size($nextLine) > 0) {
+			$nextLine = match("^[^(\r\n)]*", $nextLine);
+			$dataStringArray[size($dataStringArray)] = $nextLine;
+			$nextLine = `fgetline $fileId`;
+		}
+		fclose $fileId;
+	}
+	if ($_readLine) stringArrayRemoveAtIndex($_readLine-1,$dataStringArray);
+	return $dataStringArray;
+}
+proc string dv_readString(int $_readLine, string $_iniFilePath) {
+	string $dataStringArray[];
+	if (dv_mayaVersionOrLT(1)) {
+		string $iniFileContent[] = freadAllLines($_iniFilePath);
+		int $currentLine = 0;
+		while (size($iniFileContent[$currentLine]) > 0) {
+			$dataStringArray[size($dataStringArray)] = $iniFileContent[$currentLine];
+			$currentLine++;
+		}
+	} else {
+		int $fileId = `fopen $_iniFilePath "r"`;
+		string $nextLine = `fgetline $fileId`;
+		while (size($nextLine) > 0) {
+			$nextLine = match("^[^(\r\n)]*", $nextLine);
+			$dataStringArray[size($dataStringArray)] = $nextLine;
+			$nextLine = `fgetline $fileId`;
+		}
+		fclose $fileId;
+	}
+	return $dataStringArray[$_readLine];
+}
+proc int[] dv_readIntArray(string $_iniFilePath) {
+	string $dataStringArray[], $nextLine;
+	int $dataIntArray[7] = {0,0,0,25,25,25,1};
+	if (dv_mayaVersionOrLT(1)) {
+		$dataStringArray = freadAllLines($_iniFilePath);
+		$nextLine = $dataStringArray[0];
+	} else {
+		int $fileId = `fopen $_iniFilePath "r"`;
+		$nextLine = `fgetline $fileId`;
+		fclose $fileId;
+	}
+	if (size($nextLine)>15) {
+		int $sizeDataStringArray = `tokenize $nextLine "|" $dataStringArray`;
+		if ($sizeDataStringArray) {
+			for ($i=0; $i < $sizeDataStringArray;$i++) {
+				$dataIntArray[$i] = `match "[0-9][0-9]*" $dataStringArray[$i]`;
+			}
+		}
+	}
+	return $dataIntArray;
+}
+proc dv_writeString(string $_writeLine, string $_iniFilePath, string $_fopenMode) {
+	string $dataStringArray[];
+	if (dv_mayaVersionOrLT(1)) {
+		switch ($_fopenMode) {
+			case "w":
+				// writing
+				$dataStringArray[0] = $_writeLine;
+				break;
+			case "a":
+				// append
+				$dataStringArray = dv_readStringArray(0,$_iniFilePath);
+				$dataStringArray[size($dataStringArray)] = $_writeLine;
+				break;
+			case "r+":
+				// reading and writing
+				$dataStringArray = dv_readStringArray(0,$_iniFilePath);
+				$dataStringArray[0] = $_writeLine;
+				break;
+			default:
+				break;
+		}
+		fwriteAllLines($_iniFilePath,$dataStringArray);
+	} else {
+		if ($_fopenMode=="r+") {
+			$dataStringArray = dv_readStringArray(0,$_iniFilePath);
+			$_fopenMode = "w";
+		}
+		$dataStringArray[0] = $_writeLine;
+		int $fileId = `fopen $_iniFilePath $_fopenMode`;
+		for ($_writeLine in $dataStringArray) {
+			fprint $fileId ($_writeLine+"\r\n");
+		}
+		fclose $fileId;
+	}
+}
+proc dv_writeStringArray(string $_writeLines[], string $_iniFilePath, string $_fopenMode) {
+	if (dv_mayaVersionOrLT(1)) {
+		string $dataStringArray[];
+		switch ($_fopenMode) {
+			case "w":
+				// writing
+				$dataStringArray = $_writeLines;
+				break;
+			case "a":
+				// append
+				$dataStringArray = dv_readStringArray(0,$_iniFilePath);
+				for ($writeLine in $_writeLines) {
+					$dataStringArray[size($dataStringArray)] = $writeLine;
+				}
+				break;
+			case "r+":
+				// reading and writing
+				int $currentLine = 0;
+				$dataStringArray = dv_readStringArray(0,$_iniFilePath);
+				for ($currentLine; $currentLine < size($_writeLines);$currentLine++) {
+					$dataStringArray[$currentLine] = $_writeLines[$currentLine];
+				}
+				break;
+			default:
+				break;
+		}
+		fwriteAllLines($_iniFilePath,$dataStringArray);
+	} else {
+		int $fileId = `fopen $_iniFilePath $_fopenMode`;
+		for ($writeLine in $_writeLines) {
+			fprint $fileId ($writeLine+"\r\n");
+		}
+		fclose $fileId;
+	}
+}
+proc dv_removeFromFile(string $_removeLine, string $_iniFilePath) {
+	string $dataStringArray[] = dv_readStringArray(0, $_iniFilePath);
+	$dataStringArray = stringArrayRemoveExact({$_removeLine}, $dataStringArray);
+	dv_writeStringArray($dataStringArray, $_iniFilePath, "w");
+}
+// Get Procedures
+// --------------------------------------------------------------------------
+proc string dv_getIniFilePath() {
+	global string $dv_iniDirPath;
+	global int $dv_states[];
+	if ($dv_iniDirPath=="") {
+		$dv_iniDirPath = whatIs("dualview.mel");
+		$dv_iniDirPath = dirname(substring($dv_iniDirPath, 18, size($dv_iniDirPath)));
+	}
+	string $iniFilePath = $dv_iniDirPath+"/dualview"+$dv_states[3]+".ini";
+	if (!`filetest -f $iniFilePath`) {
+		if (!`filetest -f ($dv_iniDirPath+"/dualview.ini")`) {
+			dv_writeString("0|0|0|25|25|25|1",$iniFilePath,"w");
+		} else {
+			sysFile -rename $iniFilePath ($dv_iniDirPath+"/dualview.ini");
+		}
+	}
+	return $iniFilePath;
+}
+proc int[] dv_getValues() {
+	int $paneValues[7] = dv_readIntArray(dv_getIniFilePath());
+	return $paneValues;
+}
+proc string dv_getValueString() {
+	string $paneValues = dv_readString(0, dv_getIniFilePath());
+	return $paneValues;
+}
+proc int[] dv_getIntFieldValues() {
+	int $intFieldValues[7] = {0,0,0,25,25,25,1};
+	int $i = 0;
+	for ($i;$i<6;$i++) {
+		$intFieldValues[$i] = `intField -query -value ("dv_tabsIntField"+$i)`;
+		if ($i<3&&$intFieldValues[$i]==0) {
+			$intFieldValues[$i] = 1;
+		}
+	}
+	$intFieldValues[6] = `optionMenu -query -select dv_layoutOptionMenu`;
+	if ($intFieldValues[6]<=9) {
+		$intFieldValues[2] = 0;
+		if ($intFieldValues[6]<=3) {
+			$intFieldValues[1] = 0;
+			if ($intFieldValues[6]<=1) {
+				$intFieldValues[0] = 0;
+			}
+		}
+	}
+	return $intFieldValues;
+}
+proc string[] dv_getNames() {
+	string $names[] = dv_readStringArray(1, dv_getIniFilePath());
+	return $names;
+}
+proc string dv_tokenizeNameTabOrPanel(string $_name, int $_tabOrPanel) {
+	string $name[2] = {"",""};
+	tokenize $_name "=" $name;
+	return $name[$_tabOrPanel];
+}
+proc string[] dv_tokenizeName(string $_name) {
+	string $name[2] = {"",""};
+	tokenize $_name "=" $name;
+	return $name;
+}
+// Window Procedures
+// --------------------------------------------------------------------------
+proc int dv_createWindow() {
+	global int $dv_scriptJobs[];
+	if (!`window -exists dv_window`) {
+		global int $dv_states[];
+		if (!$dv_states[4]) {
+			window -title "dualview" -titleBar 0 dv_window;
+		} else {
+			window -title "dualview" -titleBar 1 dv_window;
+		}
+		dv_echo("window created.");
+	}
+	$dv_scriptJobs[3] = `scriptJob -uiDeleted dv_window "dv_changeSettings(7, \"\");"`;
+	return 1;
+}
+proc int dv_deleteWindow() {
+	global int $dv_scriptJobs[];
+	if (`scriptJob -exists $dv_scriptJobs[3]`) scriptJob -force -kill $dv_scriptJobs[3];
+	if (`window -exists dv_window`) {
+		deleteUI -window dv_window;
+	}
+	return 1;
+}
+proc dv_addWindowPref() {
+	if (!`windowPref -exists dv_window`) {
+		if ((`dockControl -exists dv_dockControl`)&&(!`dockControl -query -visible dv_dockControl`)) {
+			dockControl -edit -visible 1 dv_dockControl;
+		}
+		global int $dv_states[];
+		global string $gMainWindow;
+		int $topLeftCorner[2] = {0,1280};
+		int $widthHeight[2] = {1280,1024};
+		if (`windowPref -exists $gMainWindow`)	{
+			$topLeftCorner = `windowPref -q -topLeftCorner $gMainWindow`;
+			$widthHeight = `windowPref -q -widthHeight $gMainWindow`;
+			if ($topLeftCorner[1]>=-4) {
+				$topLeftCorner[1] = $widthHeight[0]+8;
+			} else {
+				$topLeftCorner[1] = 0;
+			}
+		}
+		windowPref -topLeftCorner $topLeftCorner[0] $topLeftCorner[1] -widthHeight $widthHeight[0] $widthHeight[1] dv_window;
+		$dv_states[4] = 1;
+		dv_echo("window preferences added.");
+	}
+}
+proc dv_setWindowPref() {
+	int $topLeftCorner[2] = `window -q -topLeftCorner dv_window`;
+	int $widthHeight[2] = `window -q -widthHeight dv_window`;
+	windowPref -topLeftCorner $topLeftCorner[0] $topLeftCorner[1] -widthHeight $widthHeight[0] $widthHeight[1] dv_window;
+	dv_echo("window preferences set.");
+}
+
+global proc dv_titleBarSwitch() {
+	global int $dv_states[];
+	if ($dv_states[4]) dv_setWindowPref();
+	$dv_states[4] = (!$dv_states[4]);
+	if (`window -exists dv_window`) {
+		window -edit -titleBar $dv_states[4] dv_window;
+		dv_echo("titleBar switched.");
+	}
+}
+global proc dv_closeWindow() {
+	global int $dv_states[];
+	$dv_states[2] = 1;
+	dv_deleteWindow();
+	dv_echo("window closed.");
+}
+global proc dv_minimizeWindow() {
+	if (`window -exists dv_window`) {
+		window -edit -iconify 1 dv_window;
+		dv_echo("window minimized.");
+	}
+}
+global proc dv_maximizeWindow() {
+	if (`window -exists dv_window`) {
+		window -edit -iconify 0 dv_window;
+		dv_echo("window maximized.");
+	}
+}
+// Panel And Pane Procedures
+// --------------------------------------------------------------------------
+proc dv_setCustomShotPanel() {
+	if (`modelPanel -exists customShotModelPanel`) {
+		modelEditor -e	-allObjects 0 -nurbsSurfaces 0 -polymeshes 1 -subdivSurfaces 0 -headsUpDisplay 0
+						-manipulators 0 -controlVertices 0 -hulls 0 -grid 0 -selectionHiliteDisplay 0
+						-displayAppearance "smoothShaded" -displayLights "all" -displayTextures 1 -shadows 1 
+						customShotModelPanel;
+		dv_echo("shot panel set.");
+	}
+}
+proc dv_createCustomCam(string $_cam) {
+	if($_cam=="back"&&!objExists("back")){
+		string $camera[] = `camera -n "back" -hc ("viewSet -b %camera")`;
+		hide $camera[0];
+		viewSet "-b" $camera[0];
+		if(!objExists("back")) {
+			rename $camera[0] "back";
+		}
+		dv_echo("back cam created.");
+	} else if($_cam=="bottom"&&!objExists("bottom")){
+		string $camera[] = `camera -n "bottom" -hc ("viewSet -bo %camera")`;
+		hide $camera[0];
+		viewSet "-bo" $camera[0];
+		if(!objExists("bottom")) {
+			rename $camera[0] "bottom";
+		}
+		dv_echo("bottom cam created.");
+	} else if($_cam=="left"&&!objExists("left")){
+		string $camera[] = `camera -n "left" -hc ("viewSet -ls %camera")`;
+		hide $camera[0];
+		viewSet "-ls" $camera[0];
+		if(!objExists("left")) {
+			rename $camera[0] "left";
+		}
+		dv_echo("left cam created.");
+	}
+}
+proc dv_setCustomCams(string $_names[]) {
+	if (stringArrayContains("Back=customBackModelPanel", $_names)) {
+		dv_createCustomCam("back");
+		lookThroughModelPanel back customBackModelPanel;
+		dv_echo("back view set.");
+	}
+	if (stringArrayContains("Bottom=customBottomModelPanel", $_names)) {
+		dv_createCustomCam("bottom");
+		lookThroughModelPanel bottom customBottomModelPanel;
+		dv_echo("bottom view set.");
+	}
+	if (stringArrayContains("Left=customLeftModelPanel", $_names)) {
+		dv_createCustomCam("left");
+		lookThroughModelPanel left customLeftModelPanel;
+		dv_echo("left view set.");
+	}
+	if (stringArrayContains("Shot=customShotModelPanel", $_names)) {
+		for ($cam in `lsType "camera"`) {
+			if ($cam!="perspShape"&&$cam!="topShape"&&$cam!="frontShape"&&$cam!="sideShape"&&$cam!="leftShape"&&$cam!="<done>") {
+				lookThroughModelPanel $cam customShotModelPanel;
+				break;
+			}
+		}
+		dv_echo("shot view set.");
+	}
+}
+proc dv_createCustomPanel(string $_panelName, string $_paneName) {
+	switch ($_panelName) {
+		case "customOutlinerPanel":
+			outlinerPanel -parent $_paneName -label "dualview Outliner" $_panelName;
+			break;
+		case "customAttributeEditorPanel":
+			if (!`scriptedPanelType -exists $_panelName`) {
+				scriptedPanelType -acb dv_addAttributeEditorPanel -rcb dv_removeAttributeEditorPanel -unique 1 $_panelName;
+				dv_echo($_panelName+" type created.");
+			}
+			scriptedPanel -parent $_paneName -type $_panelName -label "dualview Attribute Editor" -menuBarVisible 0 $_panelName;
+			break;
+		case "customChannelsLayersPanel":
+			if (!`scriptedPanelType -exists $_panelName`) {
+				scriptedPanelType -acb dv_addChannelsLayersPanel -rcb dv_removeChannelsLayersPanel -unique 1 $_panelName;
+				dv_echo($_panelName+" type created.");
+			}
+			scriptedPanel -parent $_paneName -type $_panelName -label "dualview Channel Box / Layer Editor" -menuBarVisible 0 $_panelName;
+			break;
+		case "customToolSettingsPanel":
+			if (!`scriptedPanelType -exists $_panelName`) {
+				scriptedPanelType -acb dv_addToolSettingsPanel -rcb dv_removeToolSettingsPanel -unique 1 $_panelName;
+				dv_echo($_panelName+" type created.");
+			}
+			scriptedPanel -parent $_paneName -type $_panelName -label "dualview Tool Settings" -menuBarVisible 0 $_panelName;
+			break;
+		case "customModelingPanel":
+			if (!`scriptedPanelType -exists $_panelName`) {
+				scriptedPanelType -acb dv_addModelingPanel -rcb dv_removeModelingPanel -unique 1 $_panelName;
+				dv_echo($_panelName+" type created.");
+			}
+			scriptedPanel -parent $_paneName -type $_panelName -label "dualview Modeling Toolkit" -menuBarVisible 0 $_panelName;
+			break;
+		case "customPerspModelPanel":
+			modelPanel -parent $_paneName -cam "persp" -label "dualview Persp View" customPerspModelPanel;
+			break;
+		case "customFrontModelPanel":
+			modelPanel -parent $_paneName -cam "front" -label "dualview Front View" customFrontModelPanel;
+			break;
+		case "customBackModelPanel":
+			dv_createCustomCam("back");
+			modelPanel -parent $_paneName -cam "back" -label "dualview Back View" customBackModelPanel;
+			break;
+		case "customTopModelPanel":
+			modelPanel -parent $_paneName -cam "top" -label "dualview Top View" customTopModelPanel;
+			break;
+		case "customBottomModelPanel":
+			dv_createCustomCam("bottom");
+			modelPanel -parent $_paneName -cam "bottom" -label "dualview Bottom View" customBottomModelPanel;
+			break;
+		case "customSideModelPanel":
+			modelPanel -parent $_paneName -cam "side" -label "dualview Side View" customSideModelPanel;
+			break;
+		case "customLeftModelPanel":
+			dv_createCustomCam("left");
+			modelPanel -parent $_paneName -cam "left" -label "dualview Left View" customLeftModelPanel;
+			break;
+		case "customShotModelPanel":
+			modelPanel -parent $_paneName -cam "persp" -label "dualview Shot View" customShotModelPanel;
+			dv_setCustomShotPanel();
+			break;
+		default:
+			scriptedPanel -parent $_paneName -type $_panelName -label ("dualview "+$_panelName) $_panelName;
+			break;
+	}
+	dv_echo($_panelName+" in "+$_paneName+" created.");
+}
+proc dv_deleteCustomPanel(int $_delete, string $_panel) {
+	string $allPanels[];
+	if ($_panel=="all") {
+		$allPanels = { "customOutlinerPanel", 
+		"customPerspModelPanel", "customFrontModelPanel", "customBackModelPanel", "customTopModelPanel",
+		"customBottomModelPanel", "customSideModelPanel", "customLeftModelPanel", "customShotModelPanel",
+		"customAttributeEditorPanel", "customChannelsLayersPanel", "customToolSettingsPanel", "customModelingPanel" };
+	} else {
+		$allPanels = { $_panel };
+	}
+	for ($_panel in $allPanels) {
+		if (`panel -exists $_panel`) {
+			eval(`getPanel -typeOf $_panel`+" -edit -unParent "+$_panel+";");
+			fillEmptyPanes;
+			dv_echo($_panel+" unparented.");
+			if ($_delete) {
+				deleteUI -panel $_panel;
+				dv_echo($_panel+" deleted.");
+			}
+		}
+	}
+}
+proc dv_usePanelInPane(string $_panelName) {
+	string $paneName = "dv_"+$_panelName+"PaneLayout";
+	if (`panel -exists $_panelName`) {
+		string $panelType = `getPanel -typeOf $_panelName`;
+		if (eval($panelType+" -query -control "+$_panelName+";")) {
+			eval($panelType+" -edit -unParent "+$_panelName+";");
+			fillEmptyPanes;
+		}
+		eval($panelType+" -edit -parent "+$paneName+" "+$_panelName+";");
+		dv_echo($panelType+" "+$_panelName+" in "+$paneName+" parented.");
+	} else if (startsWith($_panelName, "custom")) {
+		dv_createCustomPanel($_panelName, $paneName);
+	} else if (`scriptedPanelType -exists $_panelName`) {
+		string $foundPanel[1] = `getPanel -scriptType $_panelName`;
+		if (size($foundPanel)&&`scriptedPanelType -query -unique $_panelName`) {
+			if (`scriptedPanel -query -control $foundPanel[0]`) {
+				scriptedPanel -edit -unParent $foundPanel[0];
+				fillEmptyPanes;
+			}
+			scriptedPanel -edit -parent $paneName $foundPanel[0];
+			dv_echo("scriptedPanel "+$foundPanel[0]+" in "+$paneName+" parented.");
+		} else {
+			dv_createCustomPanel($_panelName, $paneName);
+		}
+	} else if (`layout -exists $_panelName`) {
+		layout -edit -parent $paneName $_panelName;
+		dv_echo("layout "+$_panelName+" in "+$paneName+" parented.");
+	} else if (`control -exists $_panelName`) {
+		control -edit -parent $paneName $_panelName;
+		fillEmptyPanes;
+		dv_echo("control "+$_panelName+" in "+$paneName+" parented.");
+	} else {
+		dv_echo("nothing to fill.");
+	}
+}
+proc dv_fillAllPanes(string $_names[]) {
+	for ($name in $_names) {
+		string $tokenizedPanelName = dv_tokenizeNameTabOrPanel($name,1);
+		if ($tokenizedPanelName!="") {
+			dv_usePanelInPane($tokenizedPanelName);
+		}
+	}
+	dv_echo("all panes filled.");
+}
+proc dv_createTabLayout(int $_currentLayout, int $_currentTab, int $_endTab, string $_names[]) {
+	string $currentLayout = "dv_tabLayout"+$_currentLayout;
+	shelfTabLayout -scrollable 0 -innerMarginWidth 0 -innerMarginHeight 0 $currentLayout;
+	for ($_currentTab;$_currentTab<$_endTab;$_currentTab++) {
+		string $tokenizedName[2] = dv_tokenizeName($_names[$_currentTab]);
+		string $paneName = $currentLayout;
+		if ($tokenizedName[1]!="") {
+			$paneName = "dv_"+$tokenizedName[1]+"PaneLayout";
+		} else {
+			$paneName += $_currentTab;
+		}
+		paneLayout -configuration "single" $paneName;
+		// Parent Pane Layout
+		setParent..;
+		tabLayout -edit -tabLabel $paneName $tokenizedName[0] $currentLayout;
+	}
+	// Parent Shelf Tab Layout
+	setParent..;
+	dv_echo($currentLayout+" created.");
+}
+proc dv_createPanes(string $_names[], int $_tabsInFirstPane, int $_tabsInSecondPane, int $_tabsInThirdPane) {
+	int $numberOfTabs = size($_names);
+	int $endFirstPane = $_tabsInFirstPane;
+	int $endSecondPane = 0;
+	int $endThirdPane = 0;
+	int $endFourthPane = 0;
+	if (!$_tabsInFirstPane||($endFirstPane>=$numberOfTabs)) {
+		$endFirstPane = $numberOfTabs;
+	} else {
+		$endSecondPane = $endFirstPane+$_tabsInSecondPane;
+		if (!$_tabsInSecondPane||($endSecondPane>=$numberOfTabs)) {
+			$endSecondPane = $numberOfTabs;
+		} else {
+			$endThirdPane = $endSecondPane+$_tabsInThirdPane;
+			if (!$_tabsInThirdPane||($endThirdPane>=$numberOfTabs)) {
+				$endThirdPane = $numberOfTabs;
+			} else {
+				$endFourthPane = $numberOfTabs;
+			}
+		}
+	}
+	setParent dv_pane;
+	if ($numberOfTabs) {
+		dv_createTabLayout(0, 0, $endFirstPane, $_names);
+		if ($endSecondPane) {
+			dv_createTabLayout(1, $endFirstPane, $endSecondPane, $_names);
+			if ($endThirdPane) {
+				dv_createTabLayout(2, $endSecondPane, $endThirdPane, $_names);
+				if ($endFourthPane) {
+					dv_createTabLayout(3, $endThirdPane, $endFourthPane, $_names);
+				}
+			}
+		}
+		if (!$endSecondPane&&`optionMenu -query -select dv_layoutOptionMenu`>1) {
+			paneLayout -configuration "single" dv_emptyPaneLayout2;
+			// Parent Pane Layout
+			setParent..;
+			if (!$endThirdPane&&`optionMenu -query -select dv_layoutOptionMenu`>3) {
+				paneLayout -configuration "single" dv_emptyPaneLayout3;
+				// Parent Pane Layout
+				setParent..;
+				if (!$endFourthPane&&`optionMenu -query -select dv_layoutOptionMenu`>9) {
+					paneLayout -configuration "single" dv_emptyPaneLayout4;
+					// Parent Pane Layout
+					setParent..;
+				}
+			}
+		}
+		dv_echo("all tabLayouts created.");
+		dv_fillAllPanes($_names);
+	} else {
+		dv_echo("no tabLayout created.");
+	}
+	if (`window -exists dv_window`&&!`window -query -visible dv_window`) {
+		showWindow dv_window;
+	}
+}
+proc dv_createPaneLayout(string $_names[], int $_values[]) {
+	if (dv_createWindow()&&!`paneLayout -exists dv_pane`) {
+		// Create Pane Layout
+		paneLayout -parent dv_window -configuration "single" dv_pane;
+		dv_echo("paneLayout created.");
+	} else {
+		// Delete Pane Children
+		string $child = "", $childArray[] = `paneLayout -query -childArray dv_pane`;
+		for ($child in $childArray) deleteUI -layout $child;
+		dv_echo("paneLayout children deleted.");
+	}
+	// Edit Pane Layout
+	switch($_values[6]) {
+		case  1: paneLayout -e -cn "single" dv_pane;
+				 break;
+		case  2: paneLayout -e -cn "horizontal2" -ps 1 100 $_values[3] dv_pane;
+				 break;
+		case  3: paneLayout -e -cn "vertical2" -ps 1 $_values[3] 100 dv_pane;
+				 break;
+		case  4: paneLayout -e -cn "horizontal3" -ps 1 100 $_values[3] -ps 2 100 $_values[4] dv_pane;
+				 break;
+		case  5: paneLayout -e -cn "vertical3" -ps 1 $_values[3] 100 -ps 2 $_values[4] 100 dv_pane;
+				 break;
+		case  6: paneLayout -e -cn "top3" -ps 1 $_values[3] $_values[4] dv_pane;
+				 break;
+		case  7: paneLayout -e -cn "left3" -ps 1 $_values[3] $_values[4] dv_pane;
+				 break;
+		case  8: paneLayout -e -cn "bottom3" -ps 3 (100-$_values[4]) (100-$_values[3]) dv_pane;
+				 break;
+		case  9: paneLayout -e -cn "right3" -ps 2 (100-$_values[3]) $_values[4] dv_pane;
+				 break;
+		case 10: paneLayout -e -cn "horizontal4" -ps 1 100 $_values[3] -ps 2 100 $_values[4] -ps 3 100 $_values[5] dv_pane;
+				 break;
+		case 11: paneLayout -e -cn "vertical4" -ps 1 $_values[3] 100 -ps 2 $_values[4] 100 -ps 3 $_values[5] 100 dv_pane;
+				 break;
+		case 12: paneLayout -e -cn "top4" -ps 1 $_values[3] $_values[5] -ps 2 $_values[4] $_values[5] dv_pane;
+				 break;
+		case 13: paneLayout -e -cn "left4" -ps 1 $_values[3] $_values[4] -ps 3 $_values[3] $_values[5] dv_pane;
+				 break;
+		case 14: int $minValue = clamp(0, 100, (100-$_values[4]-$_values[5]));
+				 paneLayout -e -cn "bottom4" -ps 2 $_values[4] (100-$_values[3]) -ps 4 $minValue (100-$_values[3]) dv_pane;
+				 break;
+		case 15: paneLayout -e -cn "right4" -ps 2 (100-$_values[3]) $_values[4] -ps 3 (100-$_values[3]) $_values[5] dv_pane;
+				 break;
+		case 16: paneLayout -e -cn "quad" -ps 1 $_values[3] $_values[4] -ps 3 $_values[5] (100-$_values[4]) dv_pane;
+				 break;
+		default: break;
+	}
+	dv_echo("paneLayout "+$_values[6]+" set.");
+	dv_createPanes($_names, $_values[0], $_values[1], $_values[2]);
+}
+// Panel Callbacks
+// --------------------------------------------------------------------------
+global proc dv_addOwnPanel() {
+	$tabName = `textField -query -text dv_tabNameTextField`;
+	$paneName = `textField -query -text dv_panelNameTextField`;
+	if ($tabName!=""&&$paneName!="") {
+		dv_changeSettings(2, $tabName+"="+$paneName);
+	}
+}
+// Attribute Editor Panel Callback
+global proc dv_addAttributeEditorPanel(string $_panelName) {
+	if (dv_mayaVersionOrLT(0)<2017) {
+		evalDeferred("dockControl -edit -visible 0 -floating 0 -area left "+getUIComponentDockControl("Attribute Editor", false)+";");
+	} else if (`workspaceControl -q -visible (getUIComponentDockControl("Attribute Editor", false))`) {
+		evalDeferred("workspaceControl -edit -visible 0 -floating 0 "+getUIComponentDockControl("Attribute Editor", false)+";");
+	}
+	global string $gAttributeEditorButton, $gAttributeEditorForm, $gAEMenuBarLayoutName;
+	global int $dv_scriptJobs[];
+	iconTextCheckBox -edit -visible 0 $gAttributeEditorButton;
+	string $child = "", $childArray[] = `layout -query -childArray $gAttributeEditorForm`;
+	for ($child in $childArray) deleteUI $child;
+	renameUI $gAttributeEditorForm ("tmp"+$gAttributeEditorForm);
+	formLayout -parent $_panelName $gAttributeEditorForm;
+	dv_createAttributeEditorPanel($gAttributeEditorForm);
+	$dv_scriptJobs[1] = `scriptJob -protected -parent $gAEMenuBarLayoutName -event "SelectionChanged" "dv_autoUpdateAttrEd"`;
+	$dv_scriptJobs[2] = `scriptJob -protected -parent $gAEMenuBarLayoutName -event "constructionHistoryChanged" "dv_autoUpdateAttrEd"`;
+	setUIComponentStateCallback("Attribute Editor", "dv_attributeEditorVisibilityStateChange");
+	global int $gAutoUpdateAttrEdFlag, $gIgnoreAEUpdate;
+	if ($gAutoUpdateAttrEdFlag && !$gIgnoreAEUpdate) {
+		evalDeferred("dv_autoUpdateAttrEd");
+	}
+	dv_echo("add callback attribute editor.");
+}
+global proc dv_removeAttributeEditorPanel(string $_panelName) {
+	global string $gAttributeEditorButton, $gAttributeEditorForm;
+	global int $dv_scriptJobs[];
+	iconTextCheckBox -edit -visible 1 $gAttributeEditorButton;
+	if (`scriptJob -exists $dv_scriptJobs[2]`) scriptJob -force -kill $dv_scriptJobs[2];
+	if (`scriptJob -exists $dv_scriptJobs[1]`) scriptJob -force -kill $dv_scriptJobs[1];
+	string $child = "", $childArray[] = `layout -query -childArray $_panelName`;
+	for ($child in $childArray) deleteUI $child;
+	renameUI("tmp"+$gAttributeEditorForm) $gAttributeEditorForm;
+	dv_createAttributeEditorPanel($gAttributeEditorForm);
+	setUIComponentStateCallback("Attribute Editor", "attributeEditorVisibilityStateChange");
+	dv_echo("remove callback attribute editor.");
+}
+global proc dv_createAttributeEditorPanel(string $_parent) {
+	string $attrEdForm = `formLayout -parent $_parent`;
+	createAEWindowContents $attrEdForm "" auto;
+	string $childArray[] = `formLayout -query -childArray $attrEdForm`;
+	formLayout -edit -af $childArray[0] "top" 0 -af $childArray[0] "left" 0 -af $childArray[0] "bottom" 0 -af $childArray[0] "right" 0 $attrEdForm;
+	int $offset = 3;
+	if (`about -mac`) $offset = 3;
+	formLayout -edit -af $attrEdForm "top" $offset -af $attrEdForm "left" 0 -af $attrEdForm "bottom" 0 -af $attrEdForm "right" 0 $_parent;
+}
+global proc int dv_attributeEditorVisibilityStateChange(int $newState, string $layout) {
+	if ($newState) {
+		if (dv_mayaVersionOrLT(0)<2017) {
+			evalDeferred("dockControl -edit -visible 0 -floating 0 -area left "+getUIComponentDockControl("Attribute Editor", false)+";");
+		}
+		global string $gMainWindow, $gAttributeEditorForm;
+		global int $gAutoUpdateAttrEdFlag, $gIgnoreAEUpdate;
+		if (`layout -exists "dv_customAttributeEditorPanelPaneLayout"`) {
+			tabLayout -edit -selectTab "dv_customAttributeEditorPanelPaneLayout" `layout -query -parent "dv_customAttributeEditorPanelPaneLayout"`;
+		}
+		int $count = `layout -query -numberOfChildren $gAttributeEditorForm`;
+		if (0 == $count) {
+			dv_createAttributeEditorPanel($gAttributeEditorForm);
+			string $selected[] = `ls -selection -tail 1`;
+			window -edit -mainWindow dv_window;
+			updateAE $selected[0];
+			window -edit -mainWindow $gMainWindow;
+		}
+		if ($gAutoUpdateAttrEdFlag && !$gIgnoreAEUpdate) {
+			evalDeferred("dv_autoUpdateAttrEd");
+		}
+	}
+	evalDeferred("restoreLastPanelWithFocus();updatePrefsMenu();");
+	return 1;
+}
+global proc dv_autoUpdateAttrEd() {
+	global int $gAutoUpdateAttrEdFlag;
+	global string $gMainWindow, $gAECurrentTab;
+	string $tempCurrentTab = $gAECurrentTab ;
+	if ($gAutoUpdateAttrEdFlag) {
+		if (`formLayout -exists MainAttributeEditorLayout`&&`formLayout -query -visible MainAttributeEditorLayout`) {
+			string $nodes[] = selectedNodes();
+			int $count = size($nodes);
+			if ($count > 0) {
+				window -edit -mainWindow dv_window;
+				updateAE($nodes[$count-1]);
+				window -edit -mainWindow $gMainWindow;
+			} else {
+				window -edit -mainWindow dv_window;		
+				updateAE "";
+				window -edit -mainWindow $gMainWindow;
+			}
+		}
+	} else if (!`objExists $gAECurrentTab`) {
+		window -edit -mainWindow dv_window;
+		updateAE "";
+		window -edit -mainWindow $gMainWindow;
+	}
+	if (!(`formLayout -exists MainAttributeEditorLayout`&&`formLayout -query -visible MainAttributeEditorLayout`)) {
+		AEupdateNode($gAECurrentTab, "");
+		$gAECurrentTab = "" ;
+	} else {
+		if (size($gAECurrentTab)==0)
+		AEupdateNode($tempCurrentTab, "");
+	}
+	dv_echo("auto update attribute editor.");
+}
+// Channels Layers Panel Callback
+global proc dv_addChannelsLayersPanel(string $_panelName) {
+	if (dv_mayaVersionOrLT(0)<2017) {
+		evalDeferred("dockControl -edit -visible 0 -floating 0 -area left "+getUIComponentDockControl("Channel Box / Layer Editor", false)+";");
+	} else if (`workspaceControl -q -visible (getUIComponentDockControl("Channel Box / Layer Editor", false))`) {
+		evalDeferred("workspaceControl -edit -visible 0 -floating 0 "+getUIComponentDockControl("Channel Box / Layer Editor", false)+";");
+	}
+	channelsLayersPrefChange(0);
+	global string $gChannelsOrChannelsLayersButton, $gChannelsLayersForm;
+	iconTextCheckBox -edit -visible 0 $gChannelsOrChannelsLayersButton;
+	string $child = "", $childArray[] = `layout -query -childArray $gChannelsLayersForm`;
+	for ($child in $childArray) deleteUI $child;
+	renameUI $gChannelsLayersForm("tmp"+$gChannelsLayersForm);
+	formLayout -parent $_panelName $gChannelsLayersForm;
+	if(dv_mayaVersionOrLT(0)>2016.5||mayaOrAnimLayersExtensionFeatures()){
+		global string $gLEAddButtons[];
+		clear $gLEAddButtons;
+	}
+	createChannelsLayers($gChannelsLayersForm);
+	if (dv_mayaVersionOrLT(0)<2017) {
+		setUIComponentStateCallback("Channel Box / Layer Editor", "dv_channelsLayersVisibilityStateChange");
+	}
+	dv_echo("add callback channels / layers.");
+}
+global proc dv_removeChannelsLayersPanel(string $_panelName) {
+	global string $gChannelsLayersForm, $gChannelsOrChannelsLayersButton;
+	iconTextCheckBox -edit -visible 1 $gChannelsOrChannelsLayersButton;
+	string $child = "", $childArray[] = `layout -query -childArray $_panelName`;
+	for ($child in $childArray) deleteUI $child;
+	renameUI("tmp"+$gChannelsLayersForm) $gChannelsLayersForm;
+	if(dv_mayaVersionOrLT(0)>2016.5||mayaOrAnimLayersExtensionFeatures()) {
+		global string $gLEAddButtons[];
+		clear $gLEAddButtons;
+	}
+	createChannelsLayers($gChannelsLayersForm);
+	if (dv_mayaVersionOrLT(0)<2017) {
+		setUIComponentStateCallback("Channel Box / Layer Editor", "");
+	}
+	dv_echo("remove callback channels / layers.");
+}
+global proc int dv_channelsLayersVisibilityStateChange(int $newState, string $layout) {
+	if ($newState) {
+		if (dv_mayaVersionOrLT(0)<2017) {
+			evalDeferred("dockControl -edit -visible 0 -floating 0 -area left "+getUIComponentDockControl("Channel Box / Layer Editor", false)+";");
+		} else if (`workspaceControl -q -visible (getUIComponentDockControl("Channel Box / Layer Editor", false))`) {
+			evalDeferred("workspaceControl -edit -visible 0 -floating 0 "+getUIComponentDockControl("Channel Box / Layer Editor", false)+";");
+		}
+		if (`layout -exists "dv_customChannelsLayersPanelPaneLayout"`) {
+			tabLayout -edit -selectTab "dv_customChannelsLayersPanelPaneLayout" `layout -query -parent "dv_customChannelsLayersPanelPaneLayout"`;
+		}
+	}
+	evalDeferred("restoreLastPanelWithFocus();updatePrefsMenu();");
+	return 1;
+}
+// Tool Settings Panel Callback
+global proc dv_addToolSettingsPanel(string $_panelName) {
+	dv_echo("add callback tool setting.");
+	if (dv_mayaVersionOrLT(0)<2017) {
+		evalDeferred("dockControl -edit -visible 0 -floating 0 -area left "+getUIComponentDockControl("Tool Settings", false)+";");
+	} else if (`workspaceControl -q -visible (getUIComponentDockControl("Tool Settings", false))`) {
+		evalDeferred("workspaceControl -edit -visible 0 -floating 0 "+getUIComponentDockControl("Tool Settings", false)+";");
+	}
+	global string $gToolSettingsButton, $gToolSettingsForm;
+	iconTextCheckBox -edit -visible 0 $gToolSettingsButton;
+	string $child = "", $childArray[] = `layout -query -childArray $gToolSettingsForm`;
+	for ($child in $childArray) deleteUI $child;
+	renameUI $gToolSettingsForm("tmp"+$gToolSettingsForm);
+	formLayout -parent $_panelName $gToolSettingsForm;
+	dv_createToolSettingsPanel($gToolSettingsForm);
+	setUIComponentStateCallback("Tool Settings", "dv_toolSettingsVisibilityStateChange");
+	if (dv_mayaVersionOrLT(0)<2017) {
+		setToolSettingsVisible(1);
+	}
+	fillEmptyPanes;
+	// TODO: crashes
+	// others/selectToolProperties.mel // line: 38
+	// others/toolPropertyWindow1.mel
+	// last command: toolPropertyShow;
+	// dv_layoutHierarchy("dv_pane","dv_window",0);
+}
+global proc dv_removeToolSettingsPanel(string $_panelName) {
+	dv_echo("remove callback tool setting.");
+	global string $gToolSettingsForm, $gToolSettingsButton;
+	iconTextCheckBox -edit -visible 1 $gToolSettingsButton;
+	string $child = "", $childArray[] = `layout -query -childArray $_panelName`;
+	for ($child in $childArray) deleteUI $child;
+	renameUI("tmp"+$gToolSettingsForm) $gToolSettingsForm;
+	dv_createToolSettingsPanel($gToolSettingsForm);
+	setUIComponentStateCallback("Tool Settings", "toolSettingsVisibilityStateChange");
+}
+global proc dv_createToolSettingsPanel(string $_parent) {
+	dv_echo("create tool setting panel.");
+	string $requiredType = "formLayout";
+	if ($requiredType != `objectTypeUI $_parent`) {
+		string $errorDisplay =(uiRes("m_initToolSettings.kArgError"));
+		string $error = `format -s $requiredType $errorDisplay`;
+		error -showLineNumber 1 $error;
+		return;
+	}
+	global string $gToolSettingsMainWindowLocation, $gToolSettingsMainWindowIcon, $gToolSettingsMainWindowName,
+	$gToolSettingsMainWindowResetButton, $gToolSettingsMainWindowHelpButton;
+	setParent $_parent;
+	string $name = `text -label "" -align "left" name`;
+	string $reset = `button -label (uiRes("m_initToolSettings.kResetTool")) reset`;
+	string $help = `button -label (uiRes("m_initToolSettings.kToolHelp")) help`;
+	string $toolArea = `tabLayout -scrollable 1 -childResizable 1 -tabsVisible 0 -innerMarginWidth 2 -innerMarginHeight 2 toolArea`;
+	columnLayout;
+	formLayout -edit -af $name "top" 1 -af $name "left" 1 -ac $name "bottom" 5 $toolArea -an $name "right"
+		-af $reset "top" 1 -ap $reset "left" 0 56 -an $reset "bottom" -ap $reset "right" 3 80
+		-af $help "top" 1 -ap $help "left" 2 80 -an $help "bottom" -af $help "right" 0
+		-ac $toolArea "top" 2 $help -af $toolArea "left" 0 -af $toolArea "bottom" 0 -af $toolArea "right" 0 $_parent;
+	global string $gMainWindow;
+	setParent $gMainWindow;
+	$gToolSettingsMainWindowLocation = $toolArea;
+	$gToolSettingsMainWindowIcon = "";
+	$gToolSettingsMainWindowName = $name;
+	$gToolSettingsMainWindowResetButton = $reset;
+	$gToolSettingsMainWindowHelpButton = $help;
+	dv_echo("tool setting panel created.");
+}
+global proc dv_redirectToolSettings(string $destination) {
+	global string $gToolSettingsMainWindowLocation, $gToolSettingsMainWindowIcon, $gToolSettingsMainWindowName, $gToolSettingsMainWindowResetButton, $gToolSettingsMainWindowHelpButton,
+	$gToolSettingsSeparateWindowLocation, $gToolSettingsSeparateWindowIcon, $gToolSettingsSeparateWindowName, $gToolSettingsSeparateWindowResetButton, $gToolSettingsSeparateWindowHelpButton;
+	if ("Main Window" == $destination) {
+		toolPropertyWindow -edit -location    $gToolSettingsMainWindowLocation;
+		toolPropertyWindow -edit -icon        $gToolSettingsMainWindowIcon;
+		toolPropertyWindow -edit -field       $gToolSettingsMainWindowName;
+		toolPropertyWindow -edit -resetButton $gToolSettingsMainWindowResetButton;
+		toolPropertyWindow -edit -helpButton  $gToolSettingsMainWindowHelpButton;
+	} else if ("Separate Window" == $destination) {
+		toolPropertyWindow -edit -location    $gToolSettingsSeparateWindowLocation;
+		toolPropertyWindow -edit -icon        $gToolSettingsSeparateWindowIcon;
+		toolPropertyWindow -edit -field       $gToolSettingsSeparateWindowName;
+		toolPropertyWindow -edit -resetButton $gToolSettingsSeparateWindowResetButton;
+		toolPropertyWindow -edit -helpButton  $gToolSettingsSeparateWindowHelpButton;
+	} else if ("" == $destination) {
+		toolPropertyWindow -edit -location    "";
+		toolPropertyWindow -edit -icon        "";
+		toolPropertyWindow -edit -field       "";
+		toolPropertyWindow -edit -resetButton "";
+	} else {
+		error (uiRes("m_initToolSettings.kInvalidDestination"));
+	}
+}
+global proc int dv_toolSettingsVisibilityStateChange(int $newState, string $layout) {
+	fillEmptyPanes;
+	if ($newState) {
+		if (dv_mayaVersionOrLT(0)<2017) {
+			evalDeferred("dockControl -edit -visible 0 -floating 0 -area left "+getUIComponentDockControl("Tool Settings", false)+";");
+		} else if (`workspaceControl -q -visible (getUIComponentDockControl("Tool Settings", false))`) {
+			// evalDeferred("workspaceControl -edit -visible 0 -floating 0 "+getUIComponentDockControl("Tool Settings", false)+";");
+		}
+		if (`paneLayout -exists "dv_customToolSettingsPanelPaneLayout"`) {
+			tabLayout -edit -selectTab "dv_customToolSettingsPanelPaneLayout" `paneLayout -query -parent "dv_customToolSettingsPanelPaneLayout"`;
+		}
+		dv_redirectToolSettings("Main Window");
+	} else if (`paneLayout -exists "dv_customToolSettingsPanelPaneLayout"`&&`paneLayout -query -visible "dv_customToolSettingsPanelPaneLayout"`){
+		dv_redirectToolSettings("Main Window");
+	} else {
+		dv_redirectToolSettings("");
+	}
+	evalDeferred("restoreLastPanelWithFocus(); updatePrefsMenu();");
+	dv_echo("tool setting visibility state changed.");
+	return 1;
+}
+// Modeling Panel Callback
+global proc dv_addModelingPanel(string $_panelName) {
+	if (dv_mayaVersionOrLT(0)<2017) {
+		evalDeferred("dockControl -edit -visible 0 -floating 0 -area left NEXDockControl;");
+	} else if (`workspaceControl -q -visible NEXDockControl`) {
+		evalDeferred("workspaceControl -edit -visible 0 -floating 0 NEXDockControl;");
+	}
+	global string $dv_tmpLayouts[], $gModelingToolkitButton, $nexPanelMenuCont, $gdRPanes;
+	iconTextCheckBox -edit -visible 0 $gModelingToolkitButton;
+	$dv_tmpLayouts[0] = `layout -query -parent $nexPanelMenuCont`;
+	string $child = "", $childArray[] = `layout -query -childArray $dv_tmpLayouts[0]`;
+	for ($child in $childArray) {
+		dv_debug("$child: "+$child);
+		deleteUI $child;
+	}
+	if (dv_mayaVersionOrLT(0)<2017) {
+		global string $nexFloatWin;
+		$dv_tmpLayouts[1] = $nexFloatWin;
+		renameUI $nexFloatWin ("tmp"+$nexFloatWin);
+	}
+	if (dv_mayaVersionOrLT(0)>2014) {
+		setUITemplate -pushTemplate ModelingToolkitTemplate;
+	}
+	rowLayout -nc 2 -ad2 1;
+	$nexPanelMenuCont = menuBarLayout();
+	DRBuildMenus;
+	setParent ..;
+	if (dv_mayaVersionOrLT(0)==2014) {
+		global string $nexPowerButton;
+		$nexPowerButton = dR_addModeBtn(`iconTextButton -st "iconOnly" -i (dR_xpmToPng("powerOff_NEX.xpm"))
+			-ann (getPluginResource("modelingToolkit", "kMTInactiveClickActivate")) -c "dR_mtkToolTGL" -h 24 -w 24 -mw 0 -mh 0 nexPowerBtn`);
+	}
+	$gdRPanes = `paneLayout -cn "horizontal2" -height 700 -ps 1 100 95 -ps 2 100 5 -p $_panelName`;
+	dv_createModelingPanel($gdRPanes);
+	dv_echo("add callback modeling.");
+}
+global proc dv_removeModelingPanel(string $_panelName) {
+	global string $dv_tmpLayouts[], $gModelingToolkitButton, $nexFloatWin, $nexPanelMenuCont, $gdRPanes;
+	iconTextCheckBox -edit -visible 1 $gModelingToolkitButton;
+	string $child = "", $childArray[] = `layout -query -childArray $_panelName`;
+	for ($child in $childArray) deleteUI $child;
+	if (dv_mayaVersionOrLT(0)<2017) {
+		$nexFloatWin = $dv_tmpLayouts[1];
+		renameUI("tmp"+$nexFloatWin) $nexFloatWin;
+	}
+	setParent $dv_tmpLayouts[0];
+	$nexPanelMenuCont = menuBarLayout();
+	$gdRPanes = `paneLayout -cn "horizontal2" -height 700 -ps 1 100 95 -ps 2 100 5 -p $nexPanelMenuCont`;
+	DRBuildMenus;
+	setParent ..;
+	if (dv_mayaVersionOrLT(0)==2014) {
+		global string $nexPowerButton;
+		$nexPowerButton = dR_addModeBtn(`iconTextButton -st "iconOnly" -i (dR_xpmToPng("powerOff_NEX.xpm"))
+			-ann (getPluginResource("modelingToolkit", "kMTInactiveClickActivate")) -c "dR_mtkToolTGL" -h 24 -w 24 -mw 0 -mh 0 nexPowerBtn`);
+	}
+	dv_createModelingPanel($gdRPanes);
+	dv_echo("remove callback modeling.");
+}
+global proc dv_createModelingPanel(string $_parent) {
+	global string $nexScrollForm, $nexFloatForm, $gDRBottomPane;
+	$nexScrollForm = `scrollLayout -cr 1 -p $_parent`;
+	$nexFloatForm = `formLayout -p $nexScrollForm`;
+	string $drBtSliceCont = `formLayout -p $_parent`;
+	string $drBtSlice = `frameLayout -p $drBtSliceCont -mw 0 -mh 0 -l (getPluginResource("modelingToolkit", "kCustomShelf")) -cll 0`;
+	$gDRBottomPane = `shelfLayout -ann (getPluginResource("modelingToolkit", "kCustomShelfAnn")) -p $drBtSlice`;
+	dRRestoreShelves();
+	formLayout -edit -af $drBtSlice "top" 4 -af $drBtSlice "bottom" 2 -af $drBtSlice "left" 2 -af $drBtSlice "right" 2 $drBtSliceCont;
+	setUITemplate -popTemplate;
+	nexBuildPanel($nexFloatForm);
+}
+// Add To Procedures
+// --------------------------------------------------------------------------
+proc dv_addToSceneOpen() {
+	global int $gUseNewScenePanelConfig, $dv_scriptJobs[];
+	if ($gUseNewScenePanelConfig) {
+		if (`dockControl -exists dv_dockControl`) {
+			$dv_scriptJobs[0] = `scriptJob -parent dv_dockControl -protected -force -replacePrevious -event SceneOpened "dv_changeSettings(0, \"1\");"`;
+			dv_echo("reload scriptJob set to dockControl.");
+		} else if (`workspaceControl -exists dv_workspaceControl`) {
+			$dv_scriptJobs[0] = `scriptJob -parent dv_workspaceControl -protected -force -replacePrevious -event SceneOpened "dv_changeSettings(0, \"1\");"`;
+			dv_echo("reload scriptJob set to workspaceControl.");
+		}
+	} else if (`dockControl -exists dv_dockControl`) {
+		$dv_scriptJobs[0] = `scriptJob -parent dv_dockControl -protected -force -replacePrevious -event SceneOpened "dv_changeSettings(0, \"0\");"`;
+		dv_echo("camera scriptJob set to dockControl.");
+	} else if (`workspaceControl -exists dv_workspaceControl`) {
+		$dv_scriptJobs[0] = `scriptJob -parent dv_workspaceControl -protected -force -replacePrevious -event SceneOpened "dv_changeSettings(0, \"0\");"`;
+		dv_echo("camera scriptJob set to workspaceControl.");
+	}
+}
+proc dv_addToStatusLine() {
+	if (!`iconTextCheckBox -exists dv_iconTextCheckBox`) {
+		dv_debug("MAYA WINDOW");
+		global string $gLayerEditorButton;
+		string $currentParent = `setParent -query`;
+		string $buttonForm = `iconTextCheckBox -query -parent $gLayerEditorButton`;
+		string $statusLineButtons[] = `formLayout -q -ca $buttonForm`;
+		setParent $buttonForm;
+		int $iconHeight = 22;
+		int $iconSpacing = 1;
+		if (dv_mayaVersionOrLT(0)<2016) {
+			$iconHeight = 26;
+			$iconSpacing = 0;
+		}
+		string $checkBox = `iconTextCheckBox -style "textOnly" -label "dv" -value 1 -width $iconHeight -height $iconHeight
+			-annotation "Show or hide the dualview Settings" -changeCommand "dv_toggleDockControl" dv_iconTextCheckBox`;
+		formLayout -edit -af $checkBox top 1 -af $checkBox left 0 -ac $statusLineButtons[0] left $iconSpacing $checkBox $buttonForm;
+		setParent $currentParent;
+		dv_echo("button added to status line.");
+	}
+}
+global proc dv_addToUserSetup() {
+	string $userSetupMelFilePath = whatIs("userSetup.mel");
+	string $userSetupCommand = "evalDeferred -lowestPriority \"source \\\"dualview.mel\\\";\";";
+	int $userSetupCommandExists = 0;
+	if ($userSetupMelFilePath=="Unknown") {
+		$userSetupMelFilePath = (`internalVar -usd`+"userSetup.mel");
+	} else {
+		string $subString = "Script found in: ";
+		$userSetupMelFilePath = substring($userSetupMelFilePath, size($subString)+1, size($userSetupMelFilePath));
+		string $userSetupMelFileContent[] = dv_readStringArray(0, $userSetupMelFilePath);
+		$userSetupCommandExists = stringArrayContains($userSetupCommand, $userSetupMelFileContent);
+	}
+	if (!$userSetupCommandExists) dv_writeString($userSetupCommand, $userSetupMelFilePath, "a");
+	dv_echo("command added to userSetup.");
+}
+global proc dv_addToShelf() {
+	global string $gShelfTopLevel;
+	if (`tabLayout -exists $gShelfTopLevel`) {
+		if (!`shelfButton -exists dualview`) {
+			string $currentParent = `setParent -q`;
+			string $currentShelf = `tabLayout -query -selectTab $gShelfTopLevel`;
+			setParent $currentShelf;
+			shelfButton	-label "dualview"
+						-width `shelfLayout -query -cellWidth $currentShelf`
+						-height `shelfLayout -query -cellHeight $currentShelf`
+						-annotation "A User Interface for DualView Displays."
+						-image "dualview.png"
+						-style "iconOnly"
+						-command "source \"dualview.mel\";"
+						-sourceType "mel"
+						dualview;
+			setParent $currentParent;
+			dv_echo("script added to shelf.");
+		} else {
+			dv_echo("shelfButton exists.");
+		}
+	}
+}
+// Load Help Website Procedure
+// --------------------------------------------------------------------------
+global proc dv_openHelpWebsite() {
+	showHelp -absolute "https://github.com/beareality/dualview";
+	dv_echo("help website loaded.");
+}
+// User Interface Procedures
+// --------------------------------------------------------------------------
+global proc dv_createUI(string $_parent) {
+	if(!`scrollLayout -exists dv_scrollLayout`) {
+		string $currentParent = `setParent -q`;
+		setParent $_parent;
+		scrollLayout -w 228 dv_scrollLayout;
+			columnLayout -w 226 -adj 1 -cat "both" 0 -rs -1 dv_windowColumLayout;
+				iconTextButton -st "textOnly" -bgc 0.322 0.522 0.651 -l "Title Bar" -c "dv_titleBarSwitch();" dv_titleBarSwitchButton;
+				rowLayout -nc 3 -cw3 73 72 73 -ct3 "both" "both" "both" -co3 -1 -1 -1 dv_titleBarButtonsRowLayout;
+					iconTextButton -st "textOnly" -bgc 0.859 0.580 0.337 -l "Close" -c "dv_closeWindow()" dv_closeIconTextButton;
+					iconTextButton -st "textOnly" -bgc 0.749 0.698 0.227 -l "Minimize" -c "dv_minimizeWindow()" dv_minimizeIconTextButton;
+					iconTextButton -st "textOnly" -bgc 0.373 0.678 0.533 -l "Maximize" -c "dv_maximizeWindow()" dv_maximizeIconTextButton;
+				// Parent Row Layout
+				setParent..;
+			// Parent Column Layout
+			setParent..;
+			frameLayout -w 226 -l "Layout" -mh 0 -mw 0 -bv 0 -cll 1 -cl 0 dv_layoutFrameLayout;
+				columnLayout -adj 1 -cat "both" 0 -rs -1 dv_uiControlsColumLayout;
+					rowLayout -ann "Change preset." -nc 3 -cw3 73 72 73 -ct3 "both" "both" "both" -co3 -1 -1 -1 dv_presetButtonsRowLayout;
+						iconTextRadioCollection dv_presetButtonCollection;
+						iconTextRadioButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Preset 1" -onc "dv_changeSettings(4,1);" -select dv_preset1Button;
+						iconTextRadioButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Preset 2" -onc "dv_changeSettings(4,2);" dv_preset2Button;
+						iconTextRadioButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Preset 3" -onc "dv_changeSettings(4,3);" dv_preset3Button;
+					// Parent Row Layout
+					setParent..;
+					optionMenu -ann "Choose layout in dropdown menu." -cc "dv_changeSettings(1, 6);" dv_layoutOptionMenu;
+						menuItem -l "single";
+						menuItem -l "horizontal 2";
+						menuItem -l "vertical 2";
+						menuItem -l "horizontal 3";
+						menuItem -l "vertical 3";
+						menuItem -l "top 2 / bottom 1";
+						menuItem -l "left 2 / right 1";
+						menuItem -l "bottom 2 / top 1";
+						menuItem -l "right 2 / left 1";
+						menuItem -l "horizontal 4";
+						menuItem -l "vertical 4";
+						menuItem -l "top 3 / bottom 1";
+						menuItem -l "left 3 / right 1";
+						menuItem -l "bottom 3 / top 1";
+						menuItem -l "right 3 / left 1";
+						menuItem -l "quad";
+					rowLayout -ann "Change fields and press enter." -nc 6 -cw6 20 51 20 50 20 51 -ct6 "both" "both" "both" "both" "both" "both" -co6 -2 -2 -2 -2 -2 -2 dv_numberIntFieldRowLayout;
+						intField -ann "Tabs in first pane, clockwise\nbeginning in the top left corner." -min 0 -max 9 -s 1 -v 0 -cc "dv_changeSettings(1, 0);" dv_tabsIntField0;
+						text -l " tabs in 1" -al "left" dv_tabsIntField0Text;
+						intField -ann "Tabs in second pane, clockwise\nbeginning in the top left corner." -min 0 -max 9 -s 1 -v 0 -cc "dv_changeSettings(1, 1);" dv_tabsIntField1;
+						text -l " tabs in 2" -al "left" dv_tabsIntField1Text;
+						intField -ann "Tabs in third pane, clockwise\nbeginning in the top left corner." -min 0 -max 9 -s 1 -v 0 -cc "dv_changeSettings(1, 2);" dv_tabsIntField2;
+						text -l " tabs in 3" -al "left" dv_tabsIntField2Text;
+					// Parent Row Layout
+					setParent..;
+					rowLayout -nc 6 -cw6 20 51 20 50 20 51 -ct6 "both" "both" "both" "both" "both" "both" -co6 -2 -2 -2 -2 -2 -2 dv_sizeIntFieldRowLayout;
+						intField -ann "Size of first pane, clockwise\nbeginning in the top left corner." -min 10 -max 80 -s 1 -v 25 -cc "dv_changeSettings(1, 3);" dv_tabsIntField3;
+						text -l " % size" -al "left" dv_tabsIntField3Text;
+						intField -ann "Size of second pane, clockwise\nbeginning in the top left corner." -min 10 -max 80 -s 1 -v 25 -cc "dv_changeSettings(1, 4);" dv_tabsIntField4;
+						text -l " % size" -al "left" dv_tabsIntField4Text;
+						intField -ann "Size of third pane, clockwise\nbeginning in the top left corner." -min 10 -max 80 -s 1 -v 25 -cc "dv_changeSettings(1, 5);" dv_tabsIntField5;
+						text -l " % size" -al "left" dv_tabsIntField5Text;
+					// Parent Row Layout
+					setParent..;
+					separator -ebg 0 -h 4 -st "none" dv_intFieldSeparator;
+					rowLayout -nc 2 -cw2 20 199 -ct2 "both" "both" -co2 -2 -2 dv_panelTextScrollListRowLayout;
+						columnLayout -adj 1 -cat "both" 0 -rs -1 -h 114 dv_upDownColumnLayout;
+							iconTextButton -ann "Move selected panel up." -st "textOnly" -bgc 0.212 0.212 0.212 -l "<" -h 38 -c "dv_changeSettings(9, \"-1\");" dv_upButton;
+							iconTextButton -ann "Remove selected panel." -st "textOnly" -bgc 0.212 0.212 0.212 -l "–" -h 38 -c "dv_changeSettings(3, \"\");" dv_removeButton;
+							iconTextButton -ann "Move selected panel down." -st "textOnly" -bgc 0.212 0.212 0.212 -l ">" -h 38 -c "dv_changeSettings(9, \"1\");" dv_downButton;
+						// Parent Column Layout
+						setParent..;
+						textScrollList -ann "Panels in panes." -ams 0 -h 114 -da dv_panelTextScrollList;
+					// Parent Row Layout
+					setParent..;
+					rowLayout -nc 2 -cw2 20 199 -ct2 "both" "both" -co2 -2 -2 dv_clearReloadRowLayout;
+						iconTextButton -ann "Clear layout." -st "textOnly" -bgc 0.212 0.212 0.212 -l "X" -c "dv_changeSettings(5, \"\");" dv_clearButton;
+						iconTextButton -ann "Reload window." -st "textOnly" -bgc 0.714 0.714 0.714 -l "Reload" -c "dv_changeSettings(6, \"\");" dv_loadButton;
+					// Parent Row Layout
+					setParent..;
+				// Parent Column Layout
+				setParent..;
+			// Parent Frame Layout
+			setParent..;
+			frameLayout -ann "Add panel." -w 226 -l "Panels" -mh 0 -mw 0 -bv 0 -cll 1 -cl 0 dv_panelsFrameLayout;
+				rowColumnLayout -nc 2 -cw 1 112 -cw 2 112 -cat 1 "both" 0 -cat 2 "both" 0 dv_panelButtonsRowColumnLayout;
+					iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Outliner" -al "left" -c "dv_changeSettings(2, \"Outliner=customOutlinerPanel\");";
+					iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Script Editor" -c "dv_changeSettings(2, \"Script=scriptEditorPanel\");";
+					if (dv_mayaVersionOrLT(0)>2013) {
+						iconTextButton -st "textOnly" -bgc 0.427 0.427 0.427 -l "Modeling" -c "dv_changeSettings(2, \"Modeling=customModelingPanel\");";
+					}
+					if (dv_debug("show tools button.")) {
+						iconTextButton -st "textOnly" -bgc 0.427 0.427 0.427 -l "Tools" -c "dv_changeSettings(2, \"Tools=customToolSettingsPanel\");";
+					}
+					iconTextButton -st "textOnly" -bgc 0.427 0.427 0.427 -l "Channels" -c "dv_changeSettings(2, \"Channels=customChannelsLayersPanel\");";
+					iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Persp View" -c "dv_changeSettings(2, \"Persp=customPerspModelPanel\");";
+					iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Front View" -c "dv_changeSettings(2, \"Front=customFrontModelPanel\");";
+					iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Top View" -c "dv_changeSettings(2, \"Top=customTopModelPanel\");";
+					iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Side View" -c "dv_changeSettings(2, \"Side=customSideModelPanel\");";
+					iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Back View" -c "dv_changeSettings(2, \"Back=customBackModelPanel\");";
+					iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Bottom View" -c "dv_changeSettings(2, \"Bottom=customBottomModelPanel\");";
+					iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Left View" -c "dv_changeSettings(2, \"Left=customLeftModelPanel\");";
+					iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Render View" -c "dv_changeSettings(2, \"Render=renderWindowPanel\");";
+					iconTextButton -st "textOnly" -bgc 0.427 0.427 0.427 -l "HyperShade" -c "dv_changeSettings(2, \"HyperShade=hyperShadePanel\");";
+					iconTextButton -st "textOnly" -bgc 0.427 0.427 0.427 -l "HyperGraph" -c "dv_changeSettings(2, \"HyperGraph=hyperGraphPanel\");";
+					iconTextButton -st "textOnly" -bgc 0.427 0.427 0.427 -l "Node Editor" -c "dv_changeSettings(2, \"Node=nodeEditorPanel\");";
+					iconTextButton -st "textOnly" -bgc 0.427 0.427 0.427 -l "Create Node" -c "dv_changeSettings(2, \"CreateNode=createNodePanel\");";
+					iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "UV Editor" -c "dv_changeSettings(2, \"UV=polyTexturePlacementPanel\");";
+					iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Graph Editor" -c "dv_changeSettings(2, \"Graph=graphEditor\");";
+					iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Dope Sheet" -c "dv_changeSettings(2, \"Dope=dopeSheetPanel\");";
+					iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Blend Shape" -c "dv_changeSettings(2, \"Blend=blendShapePanel1\");";
+					if ((dv_mayaVersionOrLT(0)>2016.5)&&!dv_mayaVersionOrLT(1)) {
+						iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Shape Editor" -c "dv_changeSettings(2, \"Shape=shapePanel1\");";
+					}
+					if (!dv_mayaVersionOrLT(1)) {
+						iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Trax Editor" -c "dv_changeSettings(2, \"Trax=clipEditorPanel\");";
+						iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Camera Sequencer" -c "dv_changeSettings(2, \"Sequence=sequenceEditorPanel\");";
+						iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Stereo" -c "dv_changeSettings(2, \"Stereo=Stereo\");";
+						iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Shot Playlist" -c "dv_changeSettings(2, \"ShotPlaylist=shotPlaylistPanel\");";
+						iconTextButton -st "textOnly" -bgc 0.427 0.427 0.427 -l "Component Editor" -c "dv_changeSettings(2, \"Component=componentEditorPanel\");";
+						iconTextButton -st "textOnly" -bgc 0.427 0.427 0.427 -l "Reference Editor" -c "dv_changeSettings(2, \"Reference=referenceEditorPanel\");";
+						iconTextButton -st "textOnly" -bgc 0.427 0.427 0.427 -l "Dynamic Rel. Editor" -c "dv_changeSettings(2, \"DynamicRel=dynRelEdPanel1\");";
+						iconTextButton -st "textOnly" -bgc 0.427 0.427 0.427 -l "Paint Effects" -c "dv_changeSettings(2, \"Paint=dynPaintScriptedPanelType\");";
+					}
+					iconTextButton -st "textOnly" -bgc 0.427 0.427 0.427 -l "Visor" -c "dv_changeSettings(2, \"Visor=visorPanel\");";
+					iconTextButton -st "textOnly" -bgc 0.427 0.427 0.427 -l "Relationship Editor" -c "dv_changeSettings(2, \"Relationship=relationshipPanel\");";
+					iconTextButton -st "textOnly" -bgc 0.427 0.427 0.427 -l "Blind Data Editor" -c "dv_changeSettings(2, \"Blind=blindDataEditor\");";
+					iconTextButton -st "textOnly" -bgc 0.427 0.427 0.427 -l "Poly Select. Constraint" -c "dv_changeSettings(2, \"PolySelectionConstraint=polySelectionConstraintPanel\");";
+					if ((dv_mayaVersionOrLT(0)>2015)&&!dv_mayaVersionOrLT(1)) {
+						iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Profiler" -c "dv_changeSettings(2, \"Profiler=profilerPanel\");";
+					}
+					iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Shot View" -c "dv_changeSettings(2, \"Shot=customShotModelPanel\");";
+					iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Attributes (BETA)" -c "dv_changeSettings(2, \"Attributes=customAttributeEditorPanel\");";
+					if (dv_debug("show hidden buttons.")) {
+						iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Multilister" -c "dv_changeSettings(2, \"Multilister=multiListerPanel\");";
+						iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "rendRelPanel" -c "dv_changeSettings(2, \"rendRelPanel=rendRelPanel\");";
+						iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "webBrowserPanel" -c "dv_changeSettings(2, \"webBrowserPanel=webBrowserPanel\");";
+						iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Render View" -c "dv_changeSettings(2, \"RenderView=renderView\");";
+						iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Dyn Paint" -c "dv_changeSettings(2, \"dynPaint=dynPaintScriptedPanel\");";
+					}
+				// Parent Row Column Layout
+				setParent..;
+			// Parent Frame Layout
+			setParent..;
+			frameLayout -ann "Enter tab and panel or layout name.\nAdd own panel." -w 226 -l "Own Panel" -mh 0 -mw 0 -bv 0 -cll 1 -cl 1 dv_customPanelFrameLayout;
+				columnLayout -adj 1 -cat "both" 0 -rs -1 dv_ownPanelColumnLayout;
+					rowLayout -nc 2 -cw2  112 112 -ct2 "both" "both" -co2 -1 -1 dv_tabNameTextFieldsRowLayout;
+						textField dv_tabNameTextField;
+						text -l " Tab Name" -al "left" dv_tabNameText;
+					// Parent Row Layout
+					setParent..;
+					rowLayout -nc 2 -cw2  112 112 -ct2 "both" "both" -co2 -1 -1 dv_panelNameTextFieldsRowLayout;
+						textField dv_panelNameTextField;
+						text -l " Panel Name" -al "left" dv_panelNameText;
+					// Parent Row Layout
+					setParent..;
+					iconTextButton -st "textOnly" -bgc 0.212 0.212 0.212 -l "Add Own Panel" -c "dv_addOwnPanel" dv_addOwnPanelIconTextButton;
+				// Parent Column Layout
+				setParent..;
+			// Parent Frame Layout
+			setParent..;
+			frameLayout -w 226 -l "Misc." -mh 0 -mw 0 -bv 0 -cll 1 -cl 1 dv_miscFrameLayout;
+				columnLayout -adj 1 -cat "both" 0 -rs -1 dv_miscColumnLayout;
+					rowLayout -nc 2 -cw2  112 112 -ct2 "both" "both" -co2 -1 -1 dv_miscButtonsRowLayout;
+						iconTextButton -ann "Add command to userSetup.mel (autostart)." -st "textOnly" -bgc 0.427 0.427 0.427 -l "Add to userSetup" -c "dv_addToUserSetup" dv_addToUserSetupButton;
+						iconTextButton -ann "Add button to current shelf." -st "textOnly" -bgc 0.427 0.427 0.427 -l "Add to Shelf" -c "dv_addToShelf" dv_addToShelfButton;
+					// Parent Row Layout
+					setParent..;
+					iconTextButton -ann "Open help website."  -st "textOnly" -l "www.beareality.com" -c "dv_openHelpWebsite" dv_openHelpWebsiteButton;
+				// Parent Column Layout
+				setParent..;
+			// Parent Frame Layout
+			setParent..;
+		// Parent Scroll Layout
+		setParent..;
+		setParent $currentParent;
+	}
+}
+proc string dv_getActiveMayaTab() {
+	global string $gUIComponentDockControlArray[];
+	string $tempIndex;
+	int $tempIndNum;
+	for($tempIndNum = 0; $tempIndNum < size($gUIComponentDockControlArray); $tempIndNum += 2){
+		$tempIndex = $gUIComponentDockControlArray[$tempIndNum + 1];
+		if (dv_mayaVersionOrLT(0)>2016.5) {
+			if(`workspaceControl -q -raise $tempIndex`)	{
+				return $tempIndex;
+			}
+		} else {
+			if(`dockControl -q -raise $tempIndex`)	{
+				return $tempIndex;
+			}
+		}
+	}
+	return "";
+}
+proc dv_createDockOrWorkspaceControl() {
+	dv_setGlobalVariables();
+	string $prevActiveTab = `dv_getActiveMayaTab`;
+	if (dv_mayaVersionOrLT(0)>2016.5) {
+		dv_debug("DUALVIEW WORKSPACECONTROL");
+		if (!`workspaceControl -exists dv_workspaceControl`) {
+			string $tabToControl = getUIComponentDockControl("Channel Box / Layer Editor", false);
+			if(!`isUIComponentVisible($tabToControl)`) {
+				$tabToControl = getUIComponentDockControl("Tool Settings", false);
+				if(!`isUIComponentVisible($tabToControl)`) {
+					$tabToControl = getUIComponentDockControl("Attribute Editor", false);
+					if(!`isUIComponentVisible($tabToControl)`) {
+						$tabToControl = "";
+					}
+				}
+			}
+			if ($tabToControl != "") {
+				workspaceControl -l "dualview Settings" -mw 1 -wp "fixed" -iw 250 -vcc "dv_updateIconTextCheckBox" -fl 0 -ttc $tabToControl -1 dv_workspaceControl;
+			} else {
+				global string $gWorkAreaForm;
+				workspaceControl -l "dualview Settings" -mw 1 -wp "fixed" -iw 250 -vcc "dv_updateIconTextCheckBox" -fl 0 -dtp $gWorkAreaForm "right" 0 dv_workspaceControl;
+			}
+		}
+		dv_createUI("dv_workspaceControl");
+		dv_echo("workspaceControl created.");
+		dv_changeSettings(7, "");
+	} else if (!`dockControl -exists dv_dockControl`) {
+		dv_debug("DUALVIEW DOCKCONTROL");
+		global string $gMainWindow;
+		dv_createUI($gMainWindow);
+		dockControl -l "dualview Settings" -a "right" -con "dv_scrollLayout" -aa "right" -w 250 -vcc "dv_updateIconTextCheckBox" dv_dockControl;
+		dv_echo("dockControl created.");
+		dv_changeSettings(7, "");
+	}
+	if($prevActiveTab != "") {
+		if (dv_mayaVersionOrLT(0)>2016.5) {
+			workspaceControl -e -raise $prevActiveTab;
+		} else {
+			dockControl -e -raise $prevActiveTab;
+		}
+	}
+}
+proc dv_updateDockControl(string $_names[], int $_values[]) {
+	int $i = 0;
+	for ($i;$i<3;$i++) {
+		intField -edit -enable 1 -value $_values[$i] ("dv_tabsIntField"+$i);
+		intField -edit -enable 1 -value $_values[$i+3] ("dv_tabsIntField"+($i+3));
+		if (!$_values[$i]) {
+			intField -edit -enable 0 ("dv_tabsIntField"+$i);
+			intField -edit -enable 0 ("dv_tabsIntField"+($i+3));
+		}
+	}
+	optionMenu -edit -select $_values[6] dv_layoutOptionMenu;
+	textScrollList -edit -removeAll dv_panelTextScrollList;
+	int $sizeOfTabs = size($_names);
+	if ($sizeOfTabs) {
+		int $i = 0;
+		for ($i; $i < $sizeOfTabs;$i++) {
+			string $tokenizedTabName = dv_tokenizeNameTabOrPanel($_names[$i],0);
+			int $startSecondPane = $_values[0];
+			int $startThirdPane = -1;
+			int $startFourthPane = -1;
+			if (!$startSecondPane||($startSecondPane>=$sizeOfTabs)) {
+				$startSecondPane = -1;
+			} else {
+				$startThirdPane = $startSecondPane+$_values[1];
+				if (!$_values[1]||($startThirdPane>=$sizeOfTabs)) {
+					$startThirdPane = -1;
+				} else {
+					$startFourthPane = $startThirdPane+$_values[2];
+					if (!$_values[2]||($startFourthPane>=$sizeOfTabs)) {
+						$startFourthPane = -1;
+					}
+				}
+			}
+			if ($i==0&&$sizeOfTabs&&$_values[6]>1) textScrollList -edit -append "———————————— 1 pane" dv_panelTextScrollList;
+			if ($i==$startSecondPane) textScrollList -edit -append "———————————— 2 pane" dv_panelTextScrollList;
+			if ($i==$startThirdPane) textScrollList -edit -append "———————————— 3 pane" dv_panelTextScrollList;
+			if ($i==$startFourthPane) textScrollList -edit -append "———————————— 4 pane" dv_panelTextScrollList;
+			textScrollList -edit -append $tokenizedTabName -selectCommand "dv_changeSettings(8, \"\");" -deleteKeyCommand "dv_changeSettings(3, \"\");" dv_panelTextScrollList;
+		}
+	}
+}
+global proc dv_toggleDockControl() {
+	if (`dockControl -exists dv_dockControl`) {
+		dockControl -edit -visible (!`dockControl -query -visible dv_dockControl`) dv_dockControl;
+	} else if (`workspaceControl -exists dv_workspaceControl`) {
+		workspaceControl -edit -visible (!`workspaceControl -query -visible dv_workspaceControl`) dv_workspaceControl;
+	}
+}
+global proc dv_updateIconTextCheckBox() {
+	if (`iconTextCheckBox -exists dv_iconTextCheckBox`)	{
+		if (`dockControl -exists dv_dockControl`) {
+			iconTextCheckBox -edit -value `dockControl -query -visible dv_dockControl` dv_iconTextCheckBox;
+		} else if (`workspaceControl -exists dv_workspaceControl`) {
+			iconTextCheckBox -edit -value `workspaceControl -query -visible dv_workspaceControl` dv_iconTextCheckBox;
+		}
+	}
+}
+// Settings Procedures
+// --------------------------------------------------------------------------
+global proc dv_changeSettings(int $_changeOption, string $_changeObject) {
+	string $names[] = {}, $selectedTab[1] = {};
+	int $values[7] = {0,0,0,0,0,0,0};
+	switch ($_changeOption) {
+		// New Scene Opened
+		case 0:
+			$names = dv_getNames();
+			if ($_changeObject==1) {
+				dv_fillAllPanes($names);
+			} else {
+				if (stringArrayContains("HyperShade=hyperShadePanel", $names)&&`scriptedPanel -ex hyperShadePanel1`&&`scriptedPanel -query -control hyperShadePanel1`=="") {
+					dv_echo("reload hyperShade.");
+					dv_usePanelInPane("hyperShadePanel");
+				}
+				if (stringArrayContains("Node=nodeEditorPanel", $names)&&`scriptedPanel -ex nodeEditorPanel1`&&`scriptedPanel -query -control nodeEditorPanel1`=="") {
+					dv_echo("reload nodeEditor.");
+					dv_usePanelInPane("nodeEditorPanel");
+				}
+			}
+			dv_setCustomCams($names);
+			break;
+		// Change Int Field
+		case 1:
+			int $fieldValues[7] = dv_getIntFieldValues();
+			$values = dv_getValues();
+			if ($values[(int)$_changeObject]!=$fieldValues[(int)$_changeObject]) {
+				global int $dv_states[];
+				$dv_states[2] = 1;
+				dv_writeString($fieldValues[0]+"|"+$fieldValues[1]+"|"+$fieldValues[2]+"|"+$fieldValues[3]+"|"+$fieldValues[4]+"|"+$fieldValues[5]+"|"+$fieldValues[6], dv_getIniFilePath(), "r+");
+				$names = dv_getNames();
+				dv_updateDockControl($names, $fieldValues);
+				dv_echo("settings intField "+$_changeObject+ " changed to "+$fieldValues[(int)$_changeObject]+".");
+			}
+			break;
+		// Add Panel
+		case 2:
+			$names = dv_getNames();
+			if (!stringArrayContains($_changeObject, $names)) {
+				global int $dv_states[];
+				$dv_states[2] = 1;
+				dv_writeString($_changeObject, dv_getIniFilePath(), "a");
+				$names[size($names)]=$_changeObject;
+				$values = dv_getValues();
+				dv_updateDockControl($names, $values);
+				dv_echo("settings panel added.");
+			}
+			break;
+		// Remove Panel
+		case 3:
+			$selectedTab = `textScrollList -query -selectItem dv_panelTextScrollList`;
+			if (size($selectedTab)&&(!startsWith($selectedTab[0], "————————————"))) {
+				int $i = 0;
+				$names = dv_getNames();
+				for ($i;$i<size($names);$i++) {
+					string $name[2] = dv_tokenizeName($names[$i]);
+					if ($selectedTab[0]==$name[0]) {
+						dv_deleteCustomPanel(1, $name[1]);
+						dv_removeFromFile($names[$i], dv_getIniFilePath());
+						stringArrayRemoveAtIndex($i, $names);
+						break;
+					}
+				}
+				$values = dv_getValues();
+				dv_deleteWindow();
+				dv_updateDockControl($names, $values);
+				dv_createPaneLayout($names, $values);
+				dv_echo("settings panel removed.");
+			}
+			break;
+		// Change Preset
+		case 4:
+			global int $dv_states[];
+			$dv_states[3] = (int)$_changeObject;
+			$names = dv_getNames();
+			$values = dv_getValues();
+			dv_deleteWindow();
+			dv_updateDockControl($names, $values);
+			dv_createPaneLayout($names, $values);
+			dv_setCustomCams($names);
+			dv_echo("preset "+$dv_states[3]+" set.");
+			break;
+		// Clear
+		case 5:
+			dv_deleteCustomPanel(1, "all");
+			$values = dv_getValues();
+			dv_writeString($values[0]+"|"+$values[1]+"|"+$values[2]+"|"+$values[3]+"|"+$values[4]+"|"+$values[5]+"|"+$values[6], dv_getIniFilePath(), "w");
+			dv_deleteWindow();
+			dv_updateDockControl({}, $values);
+			dv_createPaneLayout({}, $values);
+			dv_echo("settings panels cleared.");
+			break;
+		// Reload
+		case 6:
+			global int $dv_states[];
+			$names = dv_getNames();
+			$values = dv_getValues();
+			if ($dv_states[2]) {
+				$dv_states[2] = 0;
+				dv_deleteWindow();
+				dv_createPaneLayout($names, $values);
+				dv_echo("settings reloaded.");
+			} else if (dv_debug("settings reloaded.")) {
+				dv_createPaneLayout($names, $values);
+			}
+			break;
+		// Load
+		case 7:
+			dv_debug("DUALVIEW WINDOW");
+			$names = dv_getNames();
+			$values = dv_getValues();
+			dv_updateDockControl($names, $values);
+			dv_createPaneLayout($names, $values);
+			dv_addToSceneOpen();
+			break;
+		// Select Tab
+		case 8:
+			$selectedTab = `textScrollList -query -selectItem dv_panelTextScrollList`;
+			if (!startsWith($selectedTab[0], "————————————")) {
+				int $i = 0;
+				for ($i;$i<4;$i++) {
+					if (`tabLayout -exists ("dv_tabLayout"+$i)`) {
+						string $tabLabels[] = `tabLayout -query -tabLabel ("dv_tabLayout"+$i)`;
+						int $tabIndex = -1;
+						int $j = 0;
+						for ($j;$j<size($tabLabels);$j++) {
+							if ($selectedTab[0]==$tabLabels[$j]) {
+								$tabIndex = $j;
+								break;
+							}
+						}
+						if ($tabIndex += 1) {
+							tabLayout -edit -selectTabIndex $tabIndex ("dv_tabLayout"+$i);
+						}
+					}
+				}
+				dv_echo($selectedTab[0]+" selected.");
+			}
+			break;
+		// Move Panel
+		case 9:
+			$selectedTab = `textScrollList -query -selectItem dv_panelTextScrollList`;
+			if (!startsWith($selectedTab[0], "————————————")) {
+				int $i = 0;
+				$names = dv_getNames();
+				int $sizeNames = `size($names)`;
+				int $moveDirection = (int)$_changeObject;
+				for ($i;$i<$sizeNames;$i++) {
+					string $name[2] = dv_tokenizeName($names[$i]);
+					if ($selectedTab[0]==$name[0]) {
+						if ($i+$moveDirection>=0&&$i+$moveDirection<=$sizeNames) {
+							global int $dv_states[];
+							$dv_states[2] = 1;
+							string $tmpName = $names[$i];
+							stringArrayRemoveAtIndex($i, $names);
+							stringArrayInsertAtIndex($i+$moveDirection, $names, $tmpName);
+							$values = dv_getValues();
+							dv_updateDockControl($names, $values);
+							textScrollList -edit -selectItem $selectedTab[0] dv_panelTextScrollList;
+							stringArrayInsertAtIndex( 0, $names, dv_getValueString());
+							dv_writeStringArray($names, dv_getIniFilePath(), "w");
+						}
+						break;
+					}
+				}
+				dv_echo("settings panel moved.");
+			}
+		default:
+			break;
+	}
+}
+// Init
+// --------------------------------------------------------------------------
+{
+	// dv_develop();
+	dv_addToStatusLine();
+	dv_addWindowPref();
+	dv_createDockOrWorkspaceControl();
+}

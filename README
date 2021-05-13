@@ -1,0 +1,52 @@
+--------------------------------------------------------------------------
+dualview - MEL Script
+--------------------------------------------------------------------------
+
+DESCRIPTION:
+ A maya user interface for dualview displays.
+
+INSTALL:
+ Quit Maya if it is running.
+ Copy the script and icon files to the default maya scripts and icons folder.
+ If you do not set the MAYA_APP_DIR variable, the default values are:
+ Windows XP
+  \Documents and Settings\<username>\My Documents\maya\scripts
+  \Documents and Settings\<username>\My Documents\maya\<version>\prefs\icons
+ Windows Vista, Windows 7, Windows 10
+  \Users\<username>\Documents\maya\scripts
+  \Users\<username>\Documents\maya\<version>\prefs\icons
+ Mac OS X
+  ~<username>/Library/Preferences/Autodesk/maya/scripts
+  ~<username>/Library/Preferences/Autodesk/maya/<version>/prefs/icons
+ Linux (64-bit)
+  ~<username>/maya/scripts
+  ~<username>/maya/<version>/prefs/icons
+
+USAGE:
+ To run the script enter in the MEL command line.
+ source "dualview.mel";
+
+AUTHOR:
+ Christian Staschinski - info@beareality.com - https://www.beareality.com
+
+COPYRIGHT:
+ Copyright (c) 2021 Beareality UG (haftungbeschränkt) - All Rights Reserved.
+ GNU GENERAL PUBLIC LICENSE
+
+VERSION:
+ 3.10 - 21-05-13 - Added Open Source License
+ 3.10 - 16-12-10 - Added Maya 2017 Support, Fixed Bugs
+ 3.00 - 16-04-25 - Added and Rewrote Functions, Fixed Bugs, Lite Version
+ 2.00 - 15-01-28 - Added Bottom Pane Layout and Maya LT Update
+ 1.31 - 14-10-11 - Added Delete Function and Width Settings
+ 1.30 - 14-08-06 - Added Fullscreen and pywin32 Check
+ 1.21 - 12-08-10 - Fixed Bugs and Code Cleanup
+ 1.20 - 12-08-09 - Added Settings Dockcontrol
+ 1.10 - 12-04-28 - Added Python Init Script
+ 1.02 - 11-06-24 - Added Panels
+ 1.01 - 11-03-01 - Added Center Pane Layout and Channels Tab
+ 1.00 - 11-01-07 - Initial Release
+
+--------------------------------------------------------------------------
+https://github.com/beareality/dualview
+--------------------------------------------------------------------------
